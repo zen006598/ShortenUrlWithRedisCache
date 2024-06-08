@@ -1,0 +1,18 @@
+version: "3.9"
+services:
+  sql:
+    build: .
+    platform: linux/amd64
+    container_name: sql_server2022
+    ports:
+      - "1433:1433"
+    environment:
+      - ACCEPT_EULA=y
+    secrets:
+      - sa_password
+    entrypoint: ["/usr/src/app/entrypoint.sh"]
+
+secrets:
+  sa_password:
+    file: ./sa_password_file
+
