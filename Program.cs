@@ -1,5 +1,7 @@
 using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Caching.Distributed;
+using Microsoft.Extensions.Caching.StackExchangeRedis;
 using ShortenUrlWithRedis.Data;
 using ShortenUrlWithRedis.Entity;
 using ShortenUrlWithRedis.Extension;
@@ -17,6 +19,12 @@ var conStrBuilder = new SqlConnectionStringBuilder(builder.Configuration.GetConn
 var mssqlConnection = conStrBuilder.ConnectionString;
 
 builder.Services.AddDbContext<ApplicationDbContext>(options => options.UseSqlServer(mssqlConnection));
+
+builder.Services.AddStackExchangeRedisCache(options =>
+{
+    var redisConnection = options.Configuration = builder.Configuration.GetConnectionString("Redis");
+    options.Configuration = redisConnection;
+});
 
 builder.Services.AddScoped<UrlShorteningService>();
 
@@ -39,7 +47,8 @@ app.MapPost("/api/shorten", async (
     ShortenUrlRequest request,
     UrlShorteningService urlShorteningService,
     ApplicationDbContext _dbContext,
-    HttpContext httpContext) =>
+    HttpContext httpContext,
+    IDistributedCache cache) =>
 {
     if (!Uri.TryCreate(request.Url, UriKind.Absolute, out var _))
     {
@@ -58,6 +67,12 @@ app.MapPost("/api/shorten", async (
     _dbContext.ShortenedUrls.Add(shortenUrl);
     await _dbContext.SaveChangesAsync();
 
+    var cacheKey = $"shorturl:{code}";
+    await cache.SetStringAsync(cacheKey, shortenUrl.ShortUrl, new DistributedCacheEntryOptions
+    {
+        AbsoluteExpirationRelativeToNow = TimeSpan.FromHours(1)
+    });
+
     return Results.Ok(shortenUrl.ShortUrl);
 });
 
@@ -65,11 +80,25 @@ app.MapPost("/api/shorten", async (
 app.MapGet("/api/{code}", async (
     string code,
     UrlShorteningService urlShorteningService,
-    ApplicationDbContext _dbContext) =>
+    ApplicationDbContext _dbContext,
+    IDistributedCache cache,
+    ILogger<Program> logger) =>
 {
+    var cacheKey = $"shorturl:{code}";
+    var cachedUrl = await cache.GetStringAsync(cacheKey);
+    if (cachedUrl != null)
+    {
+        return Results.Ok(cachedUrl);
+    }
+
     var url = await urlShorteningService.GetOriginalUrl(code);
     if (url is null)
         return Results.NotFound();
+
+    await cache.SetStringAsync(cacheKey, url, new DistributedCacheEntryOptions
+    {
+        AbsoluteExpirationRelativeToNow = TimeSpan.FromHours(1)
+    });
 
     return Results.Ok(url);
 });
